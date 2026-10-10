@@ -1,0 +1,1106 @@
+//============================================================================
+//
+//  This program is free software; you can redistribute it and/or modify it
+//  under the terms of the GNU General Public License as published by the Free
+//  Software Foundation; either version 2 of the License, or (at your option)
+//  any later version.
+//
+//  This program is distributed in the hope that it will be useful, but WITHOUT
+//  ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
+//  FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
+//  more details.
+//
+//  You should have received a copy of the GNU General Public License along
+//  with this program; if not, write to the Free Software Foundation, Inc.,
+//  51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+//
+//============================================================================
+
+module emu
+(
+	`include "sys/emu_ports.vh"
+);
+
+///////// Default values for ports not used in this core /////////
+
+assign ADC_BUS  = 'Z;
+assign USER_OUT = '1;
+assign {UART_RTS, UART_TXD, UART_DTR} = 0;
+assign {SD_SCK, SD_MOSI, SD_CS} = 'Z;
+// SDRAM pins driven for real below (Round 7 -- tile/sprite graphics ROM
+// storage, ported from Rack 'Em Up's proven sdram.sv/sdram_arbiter.sv).
+// DDRAM_* belong to screen_rotate (the HDMI rotation framebuffer, see the video output section at the end of this file); VGA_SL comes
+// from arcade_video.
+assign FB_FORCE_BLANK = 1'b0;
+
+assign VGA_F1 = 0;
+assign VGA_SCALER  = 0;
+assign VGA_DISABLE = 0;
+assign HDMI_FREEZE = 0;
+assign HDMI_BLACKOUT = 0;
+assign HDMI_BOB_DEINT = 0;
+
+assign AUDIO_S = 1; // signed
+assign AUDIO_MIX = 0;
+
+assign LED_DISK = 0;
+assign LED_POWER = 0;
+assign BUTTONS = 0;
+
+//////////////////////////////////////////////////////////////////
+
+// HDMI picture options (same menu bits, labels and screen_rotate wiring as Battlantis, confirmed on this board):
+//   Orientation (status[1]): Horizontal (0, default) = the picture is rotated in DDR3 by screen_rotate so the vertical monitor game is upright
+//   (portrait, pillar boxed) on a normal landscape display; Vertical (1) = raw passthrough, for a display that is itself mounted vertically.
+//   Flip Monitor (status[2]) turns the picture 180 degrees; it is combined (xor) with the game's own flip request (K007342 reg 0 bit 4,
+//   set by the game when its Flip Screen DIP is on), the way a real board combines a DIP and a software flip source.
+//   Aspect ratio (status[4:3]): Original (the arcade monitor's 4:3, shown as 3:4 once rotated), Pixel Perfect (square pixels, 8:7 raw or
+//   7:8 rotated), Full Screen (no fixed ratio). The CRT / analog output is not touched by any of these: it stays the raw 15 kHz raster.
+wire        orientation_vertical = status[1];
+wire        no_rotate    = orientation_vertical;
+wire        flip_monitor = status[2];
+wire  [1:0] ar           = status[4:3];
+wire [11:0] raw_arx = (ar == 2'd0) ? 12'd4 : (ar == 2'd1) ? 12'd8 : 12'd0;
+wire [11:0] raw_ary = (ar == 2'd0) ? 12'd3 : (ar == 2'd1) ? 12'd7 : 12'd0;
+wire [11:0] rot_arx = (ar == 2'd0) ? 12'd3 : (ar == 2'd1) ? 12'd7 : 12'd0;
+wire [11:0] rot_ary = (ar == 2'd0) ? 12'd4 : (ar == 2'd1) ? 12'd8 : 12'd0;
+assign VIDEO_ARX = no_rotate ? raw_arx : rot_arx;
+assign VIDEO_ARY = no_rotate ? raw_ary : rot_ary;
+
+`include "build_id.v"
+// Round 9 (2026-09-12): real DIP switches, confirmed directly from
+// bladestl_mame.cpp's INPUT_PORTS_START(bladestl_joy)/konamipt.h's
+// KONAMI_COINAGE_ALT_LOC macro. Coin A/B each get the real 16-entry
+// Konami coinage table (see the case-statement translation in the DIP
+// section below) rather than a raw hex/bitfield OSD control, so the OSD
+// labels match what a player would actually see on real hardware.
+localparam CONF_STR = {
+	"RackEmUp;;",
+	"-;",
+	"P1,HDMI Video;",
+	"P1O[1],Orientation,Horizontal,Vertical;",
+	"P1O[2],Flip Monitor,Off,On;",
+	"P1O[4:3],Aspect ratio,Original,Pixel Perfect,Full Screen;",
+	"P2,CRT Video;",
+	// CRT position (analog output only; HDMI is not affected). The arcade monitor stands in portrait, so the raster's horizontal axis runs
+	// up and down on the tube: "CRT V Position" moves the picture along the raster lines (sync pulse earlier, one step = 3 pixel clocks),
+	// "CRT H Position" moves it along the raster columns (vertical sync later, one step = 2 lines).
+	"P2O[45:42],CRT V Position,0,3,6,9,12,15,18,21,24,27,30,33,36,39,42,45;",
+	"P2O[49:46],CRT H Position,0,2,4,6,8,10,12,14,16,18,20,22,24,26,28,30;",
+	"-;",
+	// Factory defaults: with every option on its first entry the DIP switches read exactly as MAME's rackemup defaults (3 balls, 20s to aim,
+	// difficulty Normal, demo sounds On, upright with single controls, coinage 1 coin 1 credit). The entry order is therefore NOT the order of
+	// the real DIP tables, see the translation in the DIP section.
+	"O[41:40],Game Version,Rack 'Em Up (L),The Hustler (M),The Hustler (J);",
+	"O[20:19],Balls,3,4,7,2;",
+	"O[12:11],Time To Aim,20s (Stage 1: 25s),17s (Stage 1: 22s),15s (Stage 1: 20s),25s (Stage 1: 30s);",
+	"O[14:13],Difficulty,Normal,Easy,Difficult,Very Difficult;",
+	"O[15],Demo Sounds,On,Off;",
+	"O[10],Cabinet,Upright,Cocktail;",
+	"O[18],Upright Controls,Single,Dual;",
+	"O[16],Flip Screen,Off,On;",
+	"O[17],Service Mode,Off,On;",
+	"O[24:21],Coin A,1C 1C,4C 1C,3C 1C,2C 1C,3C 2C,4C 3C,3C 4C,2C 3C,1C 2C,2C 5C,1C 3C,1C 4C,1C 5C,1C 6C,1C 7C,Free Play;",
+	"O[28:25],Coin B,1C 1C,4C 1C,3C 1C,2C 1C,3C 2C,4C 3C,3C 4C,2C 3C,1C 2C,2C 5C,1C 3C,1C 4C,1C 5C,1C 6C,1C 7C,No Coin B;",
+	"-;",
+	"T[0],Reset;",
+	"R[0],Reset and close OSD;",
+	"v,2;", // [optional] config version 0-99.
+	        // If CONF_STR options are changed in incompatible way, then change version number too,
+			  // so all options will get default values on first start.
+	// The J1 line is metadata, not a menu row, but its position shifts which item the OSD activates: it must sit right before the version line.
+	"J1,Shoot,English,Coin,Start;",
+	"V,v",`BUILD_DATE
+};
+
+wire forced_scandoubler;
+wire [21:0] gamma_bus;
+`ifdef VERILATOR
+// Simulation only: the hps_io stub leaves gamma_bus floating, which the video mixer reads as 'gamma enabled with an empty curve' (an all black
+// picture). On hardware the real hps_io drives the bus (gamma_en low unless the user turns the framework's gamma option on).
+assign gamma_bus[20:0] = 21'd0;
+`endif
+wire   [1:0] buttons;
+wire [127:0] status;
+wire  [10:0] ps2_key;
+
+wire        ioctl_download;
+wire        ioctl_wr;
+wire [24:0] ioctl_addr;
+wire  [7:0] ioctl_dout;
+// Round 51: HPS download flow control. The SDRAM write behind port 0 of the arbiter takes many clk_sys cycles per byte;
+// without this handshake the HPS streams the MRA bytes at full speed and every byte that arrives while a write is
+// in flight is dropped, so the SDRAM resident ROMs (tiles, sprites, speech) never fully arrive on real hardware.
+// Battlantis and Rack 'Em Up connect it exactly like this; this core had it open until Round 51.
+wire        ioctl_wait;
+wire [31:0] joystick_0, joystick_1;
+wire  [8:0] spinner_0, spinner_1, spinner_2, spinner_3;
+
+hps_io #(.CONF_STR(CONF_STR)) hps_io
+(
+	.clk_sys(clk_sys),
+	.HPS_BUS(HPS_BUS),
+	.EXT_BUS(),
+	.gamma_bus(gamma_bus),
+
+	.forced_scandoubler(forced_scandoubler),
+
+	.buttons(buttons),
+	.status(status),
+	.status_menumask({status[5]}),
+
+	.joystick_0(joystick_0),
+	.joystick_1(joystick_1),
+	.spinner_0(spinner_0),
+	.spinner_1(spinner_1),
+	.spinner_2(spinner_2),
+	.spinner_3(spinner_3),
+
+	.ioctl_download(ioctl_download),
+	.ioctl_wr(ioctl_wr),
+	.ioctl_addr(ioctl_addr),
+	.ioctl_dout(ioctl_dout),
+	.ioctl_wait(ioctl_wait),
+
+	.ps2_key(ps2_key)
+);
+
+///////////////////////   CLOCKS   ///////////////////////////////
+
+wire clk_sys;
+wire sdram_clk_shifted;
+wire pll_locked;
+pll pll
+(
+	.refclk(CLK_50M),
+	.rst(0),
+	.outclk_0(clk_sys),          // 48MHz -- see rtl/pll/pll_0002.v's 2026-09-12 comment
+	.outclk_1(sdram_clk_shifted), // 48MHz, phase-shifted -- SDRAM_CLK source
+	.locked(pll_locked)
+);
+
+wire sys_reset = RESET | status[0] | buttons[1];
+// ---- Game version select, ROM copy engine and the reset on Service Mode changes ----
+// One rbf and one MRA carry all three versions: Rack 'Em Up (L), The Hustler (M) and (J). The whole ROM stream goes to SDRAM at the ioctl addresses:
+//   0x00000 banked ROM (shared), 0x10000 fixed ROM L, 0x18000 sound ROM (shared), 0x20000 sprites L, 0x60000 tiles L,
+//   0xA0000 fixed ROM M, 0xA8000 fixed ROM J, 0xB0000 sprites M and J, 0xF0000 tiles M and J.
+// The tile ROM and the fixed program ROM live in on chip RAM, so after a download and after every change of the Game Version option a copy engine
+// reads the chosen version's bytes back from SDRAM (port 1) and writes them into those RAMs through the virtual write bus vw_*, with the whole
+// core held in reset. The sprite ROM is read from SDRAM by the sprite chip, which only needs its base address (sprite_rom_sel).
+wire [1:0] ver_sel = (status[41:40] == 2'd3) ? 2'd0 : status[41:40];
+reg  [1:0] ver_cur = 2'd0;
+reg  [1:0] ver_tgt = 2'd0;
+reg        dl_d = 1'b0;
+reg        copy_busy = 1'b0;
+reg  [1:0] cs = 2'd0;
+reg [18:0] ccnt = 19'd0;
+reg        c_req = 1'b0;
+reg        vw_wr = 1'b0;
+reg [24:0] vw_addr = 25'd0;
+reg  [7:0] vw_dout = 8'd0;
+wire [7:0] upd_p1_dout;
+wire       upd_p1_ready;
+wire [24:0] fixed_src = (ver_tgt == 2'd1) ? 25'hA0000 : (ver_tgt == 2'd2) ? 25'hA8000 : 25'h10000;
+wire [24:0] tile_src  = (ver_tgt == 2'd0) ? 25'h60000 : 25'hF0000;
+wire        in_fixed  = (ccnt < 19'h08000);
+wire [24:0] src_addr  = in_fixed ? (fixed_src + {6'd0, ccnt}) : (tile_src + {7'd0, ccnt - 19'h08000});
+wire [24:0] dst_addr  = in_fixed ? (25'h10000 + {6'd0, ccnt}) : (25'h60000 + {7'd0, ccnt - 19'h08000});
+always @(posedge clk_sys) begin
+    vw_wr <= 1'b0;
+    dl_d  <= ioctl_download;
+    if (!copy_busy) begin
+        if ((dl_d & ~ioctl_download) | (~ioctl_download & (ver_sel != ver_cur))) begin
+            ver_tgt <= ver_sel; ccnt <= 19'd0; cs <= 2'd0; copy_busy <= 1'b1;
+        end
+    end else begin
+        case (cs)
+            2'd0: begin c_req <= 1'b1; cs <= 2'd1; end
+            2'd1: if (upd_p1_ready) begin c_req <= 1'b0; vw_wr <= 1'b1; vw_addr <= dst_addr; vw_dout <= upd_p1_dout; cs <= 2'd2; end
+            2'd2: begin
+                if (ccnt == 19'h47FFF) begin copy_busy <= 1'b0; ver_cur <= ver_tgt; end
+                else begin ccnt <= ccnt + 19'd1; cs <= 2'd0; end
+            end
+            default: cs <= 2'd0;
+        endcase
+    end
+end
+wire hustler_set = (ver_cur != 2'd0);
+// Service Mode toggled in the OSD: the game only looks at the service switch at start up, so restart it (about 40 ms of reset).
+reg        svc_d = 1'b0;
+reg [21:0] svc_cnt = 22'd0;
+wire       svc_rst = (svc_cnt != 22'd0);
+always @(posedge clk_sys) begin
+    svc_d <= status[17];
+    if (svc_d != status[17]) svc_cnt <= 22'd2000000;
+    else if (svc_cnt != 22'd0) svc_cnt <= svc_cnt - 22'd1;
+end
+wire reset = sys_reset | ioctl_download | copy_busy | svc_rst;
+
+// Round 51: the SDRAM arbiter must NOT be held in reset while the ROM downloads. The MiSTer framework keeps its RESET output
+// asserted for the whole ioctl_download window (sys/sysmem.sv: ~init_reset_n | ~hps_h2f_reset_n | reset_core_req, with
+// hps_h2f_reset_n low throughout the download), so an arbiter reset by bare sys_reset is frozen for the entire download and
+// port 0 never writes a single byte to SDRAM: the tile, sprite and speech ROMs (everything that lives in SDRAM) never arrive
+// and the picture shows whatever the previous core left there. The BRAM resident ROMs only depend on ioctl_wr and were fine,
+// which is why the CPU ran. Same fix as Battlantis (Test 230, confirmed on real hardware) and Rack 'Em Up. A genuine OSD or
+// joystick reset still resets the arbiter, only the download window itself is excluded.
+wire sdram_reset = sys_reset & ~ioctl_download;
+
+// ==============================================================================
+// MAIN CPU (HD6309E) -- Round 6/7 (2026-09-12): CPU + memory + address-decode
+// (design_notes/chip_inventory.md has the full confirmed address map this
+// decode is built from). Round 7 adds real K007342/K007420 video -- YM2203,
+// UPD7759 and the sound CPU are still NOT wired yet (step 3); their I/O
+// region still reads back 8'hFF (open bus) as an explicit placeholder.
+wire [15:0] cpu_addr;
+wire [7:0]  cpu_dout;
+wire [7:0]  cpu_din;
+wire        cpu_rw;
+
+// 48MHz clk_sys -> 12MHz CPU EXTAL enable -> 3MHz E/Q, identical divider
+// chain to Battlantis/Rack 'Em Up's own proven HD6309E clocking (that
+// project's real board and this one both use 24MHz/8 = 3MHz).
+reg [1:0] bos_clk_div = 0;
+always @(posedge clk_sys) bos_clk_div <= bos_clk_div + 1'd1;
+wire bos_clk_12m = (bos_clk_div[1:0] == 2'b11);
+
+reg [1:0] bos_cpu_clk_div = 0;
+always @(posedge clk_sys) if (bos_clk_12m) bos_cpu_clk_div <= bos_cpu_clk_div + 1'd1;
+wire cpu_q = (bos_cpu_clk_div == 2'b01 || bos_cpu_clk_div == 2'b10);
+wire cpu_e = (bos_cpu_clk_div == 2'b10 || bos_cpu_clk_div == 2'b11);
+
+// IRQ/FIRQ/NMI: confirmed from bladestl_mame.cpp's vblank_w() (Round 7):
+// `if (state && m_k007342->is_int_enabled()) m_maincpu->set_input_line(
+// HD6309_FIRQ_LINE, HOLD_LINE);` -- K007342's vblank interrupt drives the
+// CPU's FIRQ line specifically, NOT IRQ (unlike Battlantis/Rack 'Em Up,
+// which use plain IRQ for the same K007342 vblank source -- a real,
+// game-specific difference, not a copy-paste assumption).
+// - NMI: the real 051733 has its own NMI timer (`set_nmi_cb()` in
+//   bladestl_mame.cpp) that jt051733.v does not implement (a known,
+//   documented gap -- see design_notes/jt051733_vs_mame_k051733.md's
+//   "NMI timer/enable (0x10-0x13) entirely unimplemented" item).
+wire cpu_bs, cpu_ba;
+wire k007342_irq;
+// Round 50: acknowledge ONLY when the FIRQ vector ($FFF6/$FFF7) is being fetched. BS=1 with BA=0 also marks the NMI,
+// IRQ and SWI vector fetches, so the NMI the 051733 timer now raises every vblank used to clear the pending vblank
+// FIRQ before the CPU ever took it (game frozen in its main loop). MAME's HOLD_LINE is cleared only when that
+// specific interrupt is taken.
+wire k007342_irq_ack = cpu_bs & ~cpu_ba & (cpu_addr[15:1] == 15'h7FFC); // IRQ vector $FFF8/$FFF9 (Rack 'Em Up uses IRQ; Blades of Steel's FIRQ vector is $FFF6) // real interrupt-acknowledge cycle only (see RackEmUp.sv's own
+                                          // task #15 root-cause comment for why this beats a bare address check)
+wire cpu_irq_n  = ~k007342_irq;   // Rack 'Em Up: the K007342 vblank drives the plain IRQ line (Blades of Steel uses FIRQ)
+wire cpu_firq_n = 1'b1;
+wire cpu_nmi_n = 1'b1;
+
+hd6309i bos_main_cpu (
+    .D(cpu_din),
+    .DOut(cpu_dout),
+    .ADDR(cpu_addr),
+    .RnW(cpu_rw),
+    .E(cpu_e),
+    .Q(cpu_q),
+    .BS(cpu_bs),
+    .BA(cpu_ba),
+    .nIRQ(cpu_irq_n),
+    .nFIRQ(cpu_firq_n),
+    .nNMI(cpu_nmi_n),
+    .AVMA(),
+    .BUSY(),
+    .LIC(),
+    .nRESET(~reset),
+    .nDMABREQ(1'b1),
+    .nHALT(1'b1)
+);
+
+// Main CPU program ROM: one contiguous 64KB image, loaded verbatim from
+// ioctl_addr 0x00000-0x0FFFF -- matches the real 27512 EPROM exactly
+// (confirmed from bladestl_mame.cpp: ROM_LOAD("797-t01.19c", 0x00000,
+// 0x10000, ...), a single 64KB file, no splitting). CPU addr 0x8000-0xffff
+// maps straight to ROM offset 0x8000-0xffff (MAME's `map(0x8000,
+// 0xffff).rom();`, no bank offset); CPU addr 0x6000-0x7fff is a banked
+// 8KB window into ROM offset [bank*0x2000 : +0x2000], bank 0-3 selected by
+// bankswitch_w bits 5-6 (`m_rombank->configure_entries(0, 4, ..., 0x2000)`).
+// Main program ROM: 96 KB, loaded from the ROM download (ioctl 0x00000-0x17fff): 64 KB banked ROM (765_j03.8e, four 16 KB banks at
+// 0x4000-0x7fff) then 32 KB fixed ROM (765_l02.7e at 0x8000-0xffff).
+(* ramstyle = "M10K" *) reg [7:0] rack_main_rom [0:98303];
+always @(posedge clk_sys) begin
+    if (ioctl_download && ioctl_wr && ioctl_addr < 25'h10000) begin
+        rack_main_rom[ioctl_addr[16:0]] <= ioctl_dout;                    // banked ROM, shared by every version
+    end else if (vw_wr && vw_addr >= 25'h10000 && vw_addr < 25'h18000) begin
+        rack_main_rom[vw_addr[16:0]] <= vw_dout;                          // fixed ROM of the selected version
+    end
+end
+
+reg [1:0] rack_rom_bank;
+reg       rack_sprite_bank;
+always @(posedge clk_sys) begin
+    if (reset) begin
+        rack_rom_bank    <= 2'd0;
+        rack_sprite_bank <= 1'b0;
+    end else if (!cpu_rw && cpu_e) begin
+        if (bankswitch_cs)   rack_rom_bank    <= cpu_dout[7:6];   // MAME battlnts: bankswitch_w, bits 6 and 7 select the 16 KB bank
+        if (spritebank_cs)   rack_sprite_bank <= cpu_dout[0];     // MAME battlnts: spritebank_w
+    end
+end
+
+// Sound command latch (0x2e14) and the interrupt trigger (0x2e18). The command goes through the same "big load" injection the Battlantis
+// core settled on (a synthetic 0x80 command ahead of the first music command), which fixed the OPL fade glitch on real hardware.
+reg [7:0] rack_sound_latch;
+reg       rack_sound_irq;
+reg       cmd80_since_last_bigload, cmd80_seen_before_last_bigload;
+always @(posedge clk_sys) begin
+    rack_sound_irq <= 1'b0;
+    if (reset) begin
+        rack_sound_latch <= 8'd0;
+        cmd80_since_last_bigload <= 1'b0;
+        cmd80_seen_before_last_bigload <= 1'b0;
+    end else if (!cpu_rw && cpu_e) begin
+        if (soundlatch_cs) begin
+            rack_sound_latch <= cpu_dout;
+            if (cpu_dout == 8'h80) begin
+                cmd80_since_last_bigload <= 1'b1;
+            end else if (cpu_dout[7] && cpu_dout < 8'h9b) begin
+                cmd80_seen_before_last_bigload <= cmd80_since_last_bigload;
+                cmd80_since_last_bigload <= 1'b0;
+            end
+        end
+        if (sndirq_cs) rack_sound_irq <= 1'b1;
+    end
+end
+wire z80_irq_ack;
+reg  z80_irq_ack_prev;
+always @(posedge clk_sys) z80_irq_ack_prev <= z80_irq_ack;
+wire z80_irq_ack_edge = z80_irq_ack && !z80_irq_ack_prev;
+localparam INJ_IDLE = 1'b0, INJ_WAIT_ACK = 1'b1;
+reg       inj_state;
+reg [7:0] inj_pending_cmd;
+reg [7:0] sound_latch_to_z80;
+reg       sound_irq_to_z80;
+always @(posedge clk_sys or posedge reset) begin
+    if (reset) begin
+        inj_state <= INJ_IDLE;
+        sound_latch_to_z80 <= 8'd0;
+        sound_irq_to_z80 <= 1'b0;
+        inj_pending_cmd <= 8'd0;
+    end else begin
+        sound_irq_to_z80 <= 1'b0;
+        case (inj_state)
+            INJ_IDLE: begin
+                if (rack_sound_irq) begin
+                    if (rack_sound_latch[7] && rack_sound_latch < 8'h9b && !cmd80_seen_before_last_bigload) begin
+                        inj_pending_cmd <= rack_sound_latch;
+                        sound_latch_to_z80 <= 8'h80;
+                        sound_irq_to_z80 <= 1'b1;
+                        inj_state <= INJ_WAIT_ACK;
+                    end else begin
+                        sound_latch_to_z80 <= rack_sound_latch;
+                        sound_irq_to_z80 <= 1'b1;
+                    end
+                end
+            end
+            INJ_WAIT_ACK: begin
+                if (z80_irq_ack_edge) begin
+                    sound_latch_to_z80 <= inj_pending_cmd;
+                    sound_irq_to_z80 <= 1'b1;
+                    inj_state <= INJ_IDLE;
+                end
+            end
+        endcase
+    end
+end
+
+// ONE read port for both windows (the CPU never reads both in the same cycle): two ports would make the synthesizer keep two copies of
+// the 96 KB ROM, and the extra memory blocks pushed the whole design over the device (the framework's scaler and gamma tables were then
+// turned into registers and the logic no longer fitted).
+wire [16:0] rack_rom_addr = cpu_addr[15] ? {2'b10, cpu_addr[14:0]}             // fixed ROM: 0x10000 + offset
+                                         : {1'b0, rack_rom_bank, cpu_addr[13:0]}; // banked ROM: bank * 16 KB + offset
+reg  [7:0] rack_rom_dout;
+always @(posedge clk_sys) rack_rom_dout <= rack_main_rom[rack_rom_addr];
+
+// Address decode (MAME battlnts.cpp main_map).
+wire k007342_cs    = (cpu_addr[15:13] == 3'b000);                      // 0x0000-0x1fff VRAM / colour RAM (the game also uses it as work RAM)
+wire k007420_cs    = (cpu_addr[15:9]  == 7'b0010000);                  // 0x2000-0x21ff sprite RAM
+wire scroll_cs     = (cpu_addr[15:9]  == 7'b0010001);                  // 0x2200-0x23ff scroll RAM
+wire palette_cs    = (cpu_addr[15:9]  == 7'b0010010);                  // 0x2400-0x25ff palette RAM
+wire ctrl_cs       = (cpu_addr[15:3]  == 13'b0_0010_0110_0000_0);      // 0x2600-0x2607 K007342 control registers
+wire dsw1_cs       = (cpu_addr == 16'h2e00);
+wire p2_cs         = (cpu_addr == 16'h2e01);
+wire p1_cs         = (cpu_addr == 16'h2e02);
+wire dsw3_cs       = (cpu_addr == 16'h2e03);                           // coin and start switches, flip, service
+wire dsw2_cs       = (cpu_addr == 16'h2e04);
+wire bankswitch_cs = (cpu_addr == 16'h2e08);
+wire spritebank_cs = (cpu_addr == 16'h2e0c);
+wire soundlatch_cs = (cpu_addr == 16'h2e14);
+wire sndirq_cs     = (cpu_addr == 16'h2e18);
+wire banked_rom_cs = (cpu_addr[15:14] == 2'b01);                       // 0x4000-0x7fff
+wire fixed_rom_cs  = cpu_addr[15];                                     // 0x8000-0xffff
+
+
+// ==============================================================================
+// VIDEO TIMING -- Round 7 (2026-09-12): real timing replacing the stock
+// template's mycore stub. Confirmed from bladestl_mame.cpp's machine_config:
+// pixel clock 24MHz/4 = 6MHz (48MHz clk_sys / 8), 384 total H / 256 visible,
+// 264 total V / 16-240 visible -- the exact same convention already proven
+// correct for Battlantis/Rack 'Em Up (same chip family). h_sync/v_sync pulse
+// timing reused verbatim from RackEmUp.sv (same chipset, same real board
+// family, no evidence this game's front porch/sync width differs).
+// ==============================================================================
+reg [2:0] pix_clk_div = 0;
+always @(posedge clk_sys) pix_clk_div <= pix_clk_div + 1'd1;
+wire ce_pix = (pix_clk_div == 3'd7);
+
+reg [10:0] h_cnt = 0;
+reg [9:0]  v_cnt = 0;
+always @(posedge clk_sys) begin
+    if (ce_pix) begin
+        if (h_cnt == 383) begin
+            h_cnt <= 0;
+            v_cnt <= (v_cnt == 263) ? 10'd0 : v_cnt + 10'd1;
+        end else begin
+            h_cnt <= h_cnt + 11'd1;
+        end
+    end
+end
+
+wire active_area = (h_cnt < 256) && (v_cnt >= 16 && v_cnt < 240);
+// Round 51: was h_cnt 320..352 = front porch 64 / sync 32 / back porch 32. A back porch SHORTER than the front porch is
+// backwards from real arcade/NTSC timing (and from Jotego's Konami sibling boards); active video starts too soon after the
+// sync pulse, so the picture sits too far left and runs off the screen. 304..336 gives 48 / 32 / 48, the same correction
+// already proven on Battlantis (TASKS.md there, 2026-10-02). Only the pulse position moves: H_TOTAL, the active window and
+// h_cnt (which the game timing depends on) are untouched.
+// Round 55: the whole sync pulse can be moved earlier by CRT_H_SHIFT pixel clocks. The picture itself (h_cnt, the active window, the HDMI
+// path which only uses the data enable) does not move; on the analog output the sync pulse arrives earlier relative to the picture, so the
+// picture appears further to the right on the CRT. Front porch 48 / sync 32 / back porch 48 at shift 0.
+wire [5:0]  CRT_H_SHIFT = {status[45:42], 1'b0} + status[45:42];       // 3 pixel clocks per step
+wire [10:0] hs_start = 11'd304 - {5'd0, CRT_H_SHIFT};
+wire [10:0] hs_end   = 11'd336 - {5'd0, CRT_H_SHIFT};
+wire HSync   = (h_cnt >= hs_start && h_cnt < hs_end);
+// Vertical sync later by 2 lines per step (CRT Horizontal Position on the portrait monitor); start wraps around the 264 line frame.
+wire [8:0] vs_start = (9'd244 + {3'd0, status[49:46], 1'b0} >= 9'd264) ? (9'd244 + {3'd0, status[49:46], 1'b0} - 9'd264) : (9'd244 + {3'd0, status[49:46], 1'b0});
+wire [8:0] vs_end   = (vs_start + 9'd3 >= 9'd264) ? (vs_start + 9'd3 - 9'd264) : (vs_start + 9'd3);
+wire VSync   = (vs_start < vs_end) ? (v_cnt >= vs_start && v_cnt < vs_end) : (v_cnt >= vs_start || v_cnt < vs_end);
+wire HBlank  = ~(h_cnt < 256);
+wire VBlank  = ~(v_cnt >= 16 && v_cnt < 240);
+
+// ==============================================================================
+// 051733 NMI TIMER (Round 50) -- MAME k051733_device::nmiclock_w() and write(), ported 1:1.
+// The ROM programs it at $CECC-$CED1 (STD $2F90 with 0, STA $2F92 with 1), so with a reload of 0 the
+// main CPU gets one NMI per vblank. The NMI handler ($D10F) pops one byte from the sound command ring
+// buffer ($5C80-$5D00) and writes it to the sound latch ($2E80); without this NMI no in-game sound
+// command was ever delivered to the sound CPU. MAME: on every vblank start the 16 bit timer is
+// decremented; if it was 0 and reg $12 bit 0 is set, NMI is pulsed for 4 chip clocks (about one CPU E
+// cycle; held for 20 clk_sys here so the CPU's E-clocked NMI sampling always sees it), then the timer
+// reloads from {reg $10, reg $11}. Reset clears the timer and the NMI line.
+// ==============================================================================
+
+
+// ==============================================================================
+// SDRAM (tile/sprite graphics ROM storage) -- ported from Rack 'Em Up's
+// proven sdram.sv/sdram_arbiter.sv verbatim (same battle-tested timing
+// margins, same Port 0/2/3 roles). Port 1 (CPU-via-SDRAM) is unused here --
+// the main CPU ROM stays in BRAM (64KB fits easily, no reason to move it).
+// ==============================================================================
+wire [15:0] sdram_dout_16;
+wire        sdram_ready;
+wire        sdram_rd;
+wire        sdram_we;
+wire [24:0] sdram_addr_in;
+wire [1:0]  sdram_wtbt;
+wire [15:0] sdram_din_16;
+
+sdram sdram_inst (
+    .init(~pll_locked),
+    .clk(clk_sys),
+    .sdram_clk_in(sdram_clk_shifted),
+
+    .SDRAM_DQ(SDRAM_DQ),
+    .SDRAM_A(SDRAM_A),
+    .SDRAM_DQML(SDRAM_DQML),
+    .SDRAM_DQMH(SDRAM_DQMH),
+    .SDRAM_BA(SDRAM_BA),
+    .SDRAM_nCS(SDRAM_nCS),
+    .SDRAM_nWE(SDRAM_nWE),
+    .SDRAM_nRAS(SDRAM_nRAS),
+    .SDRAM_nCAS(SDRAM_nCAS),
+    .SDRAM_CKE(SDRAM_CKE),
+    .SDRAM_CLK(SDRAM_CLK),
+
+    .wtbt(sdram_wtbt),
+    .addr(sdram_addr_in),
+    .dout(sdram_dout_16),
+    .din(sdram_din_16),
+    .we(sdram_we),
+    .rd(sdram_rd),
+    .ready(sdram_ready)
+);
+
+wire        upd_p1_req = c_req;     // SDRAM port 1 reads the selected version's fixed ROM and tile ROM back for the copy engine
+wire [24:0] upd_sdram_addr = src_addr;
+
+
+wire tile_sdram_req, sprite_sdram_req;
+wire [24:0] tile_sdram_addr, sprite_sdram_addr;
+wire [7:0]  tile_sdram_dout, sprite_sdram_dout;
+wire        tile_sdram_ready, sprite_sdram_ready;
+wire        p3_active;
+
+// Round 14 fix, Verilator-only workaround (confirmed via a real VCD
+// waveform, not just printf reads): `ioctl_download`/`ioctl_wr` are hps_io
+// output regs with no RTL writer after their own `initial` block (this
+// project's harness drives them externally via Verilator's public_flat_rw
+// poke mechanism, which Verilator itself cannot see as a real "driver").
+// ANY logic computed from them and fed across a submodule instantiation
+// boundary (a cell port connection) -- a plain inline expression, a named
+// wire with a real `assign`, and even a genuine clocked register all tested
+// and all identically broken -- gets permanently frozen at its t=0 value
+// once it crosses into `sdram_arbiter`'s own `p0_req` input, confirmed by a
+// real VCD waveform showing `ioctl_wr` toggling normally while
+// `bos_arbiter.p0_req` never once changes. A same-module register with NO
+// cross-module boundary (this file's own `bos_main_rom` load, structurally
+// identical otherwise) is unaffected, isolating the trigger specifically to
+// the cell-port crossing, not the computation itself -- a genuine Verilator
+// scheduling limitation, not a real hardware defect (inline expressions,
+// named wires, and registers are all electrically live-updating on real
+// silicon; MiSTer hardware never had this problem). Since simulation-only
+// workarounds for this class of bug are exactly what Verilator's own
+// public_flat_rw mechanism exists for, and `` `VERILATOR`` is defined
+// automatically by Verilator and never by Quartus, real hardware keeps the
+// exact same combinational logic it always had; only this simulation-only
+// build substitutes a directly C++-poked register that bypasses the broken
+// boundary crossing entirely (poked in lockstep with ioctl_wr in the
+// harness's own sim_main.cpp download routine).
+`ifdef VERILATOR
+    reg p0_req_w /* verilator public_flat_rw */ = 1'b0;
+`else
+    wire p0_req_w = ioctl_download & ioctl_wr;
+`endif
+
+`ifdef BOS_SDRAM_MON
+wire        mon_req;
+wire [24:0] mon_addr;
+wire [175:0] mon_rows;
+`endif
+
+sdram_arbiter bos_arbiter (
+    .clk(clk_sys),
+    .reset(sdram_reset),
+
+    .p0_req(p0_req_w),
+    .p0_addr(ioctl_addr),
+    .p0_din(ioctl_dout),
+    .p0_ready(),
+    .p0_busy(ioctl_wait),
+
+    .p1_req(upd_p1_req),
+    .p1_addr(upd_sdram_addr),
+    .p1_dout(upd_p1_dout),
+    .p1_ready(upd_p1_ready),
+
+`ifdef BOS_SDRAM_MON
+    .p2_req(tile_sdram_req | mon_req),          // Round 54: the SDRAM health monitor uses the idle tile port
+    .p2_addr(mon_req ? mon_addr : tile_sdram_addr),
+`else
+    .p2_req(tile_sdram_req),
+    .p2_addr(tile_sdram_addr),
+`endif
+    .p2_dout(tile_sdram_dout),
+    .p2_ready(tile_sdram_ready),
+
+    .p3_req(sprite_sdram_req),
+    .p3_addr(sprite_sdram_addr),
+    .p3_dout(sprite_sdram_dout),
+    .p3_ready(sprite_sdram_ready),
+    .p3_active(p3_active),
+
+    .sdram_addr(sdram_addr_in),
+    .sdram_rd(sdram_rd),
+    .sdram_we(sdram_we),
+    .sdram_din(sdram_din_16),
+    .sdram_dout(sdram_dout_16),
+    .sdram_ready(sdram_ready),
+    .sdram_wtbt(sdram_wtbt)
+);
+
+`ifdef BOS_SDRAM_MON
+// Round 54: SDRAM health monitor (rtl/sdram_mon.v), diagnostic build only. Its rows are drawn as boxes at the bottom of this file.
+reg mon_vb_d;
+always @(posedge clk_sys) mon_vb_d <= VBlank;
+wire mon_snap = VBlank & ~mon_vb_d;
+sdram_mon bos_sdram_mon (
+    .clk(clk_sys),
+    .reset(reset),
+    .dl_wr(p0_req_w),
+    .dl_addr(ioctl_addr),
+    .dl_din(ioctl_dout),
+    .req(mon_req),
+    .addr(mon_addr),
+    .dout(tile_sdram_dout),
+    .ready(tile_sdram_ready),
+    .p3_busy(p3_active),
+    .snap(mon_snap),
+    .rows(mon_rows)
+);
+`endif
+
+// ==============================================================================
+// K007342 TILEMAP GENERATOR (0x0000-0x1fff, ctrl regs 0x2600-0x2607,
+// scroll RAM 0x2200-0x23ff) -- ioctl layout note: k007342.v has the real
+// tile-cache SDRAM base (0x60000) hardcoded internally (shared file with
+// Rack 'Em Up), so Blades of Steel's own tile ROM must be loaded at that
+// same ioctl_addr offset. Reserved layout: 0x00000-0x0ffff main CPU ROM
+// (already loaded via BRAM above), 0x10000-0x1ffff reserved for audio CPU
+// (step 3), 0x20000-0x5ffff sprite ROM (256KB, matches k007420.v's own
+// hardcoded 0x20000 base), 0x60000-0x9ffff tile ROM (256KB). No .mra file
+// exists yet to actually place ROM bytes at these offsets on real hardware
+// -- this is forward-looking infrastructure, same caveat as Round 6's CPU
+// ROM loading.
+// ==============================================================================
+wire k007342_we = !cpu_rw && (k007342_cs || ctrl_cs);
+wire k007342_re =  cpu_rw && (k007342_cs || ctrl_cs);
+wire k007342_scroll_we = !cpu_rw && scroll_cs;
+
+wire [7:0] k007342_dout;
+wire [7:0] k007342_scroll_dout;
+wire [7:0] k007342_pixel;
+wire       k007342_priority;
+wire       int_enabled;
+wire       sprite_wrap_y;
+wire       flip_screen_req;
+
+k007342 #(.OVERSCAN_MASK(0)) k007342_inst (
+    .clk(clk_sys),
+    .reset(reset),
+    .layer1_enable(1'b0), // Rack 'Em Up uses only tilemap 0 (layer 1 is CPU scratch RAM), per MAME screen_update
+    .alt_priority_mode(1'b0), // Battlantis / Rack 'Em Up draw order
+    .tile_code_layout(1'b0), // Battlantis / Rack 'Em Up tile_callback bit order
+
+    .vblank(),
+    .int_enabled(int_enabled),
+    .sprite_wrap_y(sprite_wrap_y),
+    .flip_screen_req(flip_screen_req),
+    .vram_bank(1'b0), // no evidence bladestl banks VRAM (same as Battlantis/Rack 'Em Up)
+
+    .cpu_addr(cpu_addr[13:0]),
+    .cpu_din(cpu_dout),
+    .cpu_dout(k007342_dout),
+    .cpu_we(k007342_we),
+    .cpu_re(k007342_re),
+
+    .scroll_addr(cpu_addr[8:0]),
+    .scroll_din(cpu_dout),
+    .scroll_dout(k007342_scroll_dout),
+    .scroll_we(k007342_scroll_we),
+
+    .ce_pix(ce_pix),
+    .h_cnt(h_cnt[8:0]),
+    .v_cnt(v_cnt[8:0]),
+
+    .ioctl_wr(vw_wr),    // tile ROM RAM is filled by the copy engine (selected version), not straight from the download
+    .ioctl_addr(vw_addr),
+    .ioctl_dout(vw_dout),
+
+    .irq(k007342_irq),
+    .irq_ack(k007342_irq_ack),
+    .pixel_color(k007342_pixel),
+    .pixel_priority(k007342_priority),
+
+    .shadow_sdram_req(tile_sdram_req),
+    .shadow_sdram_addr(tile_sdram_addr),
+    .shadow_sdram_dout(tile_sdram_dout),
+    .shadow_sdram_ready(tile_sdram_ready),
+    .shadow_verify_addr_out(),
+    .shadow_verify_expected_out(),
+    .shadow_verify_actual_out(),
+    .shadow_verify_match_out(),
+    .shadow_verify_pass_count_out(),
+    .shadow_verify_fail_count_out(),
+    .shadow_max_wait_cycles_out(),
+    .shadow_currently_stuck_out(),
+    .cache_sim_hit_count_out(),
+    .cache_sim_miss_count_out(),
+    .port3_busy(p3_active)
+);
+
+// ==============================================================================
+// K007420 SPRITE GENERATOR (0x2000-0x21ff)
+// ==============================================================================
+wire k007420_we = !cpu_rw && k007420_cs;
+wire [7:0] k007420_dout;
+wire [7:0] k007420_pixel;
+wire       k007420_active;
+
+k007420 #(.USE_PROM(0), .SPRITE_Y_ADJ(1)) sprite_gen (   // Rack 'Em Up sprites need the one line shift, see k007420.v
+    .clk(clk_sys),
+    .reset(reset),
+    .sprite_rom_sel(hustler_set),
+
+    .spritebank(rack_sprite_bank),
+    .wrap_y(sprite_wrap_y),
+    .sprite_color_base(4'd4), // MAME gfx_battlnts_spr: colour base 64 (4 * 16)
+
+    .cpu_addr(cpu_addr[8:0]),
+    .cpu_din(cpu_dout),
+    .cpu_dout(k007420_dout),
+    .cpu_we(k007420_we),
+
+    .ce_pix(ce_pix),
+    .h_cnt(h_cnt[8:0]),
+    .v_cnt(v_cnt[8:0]),
+
+    .ioctl_wr(p0_req_w), // same value as (ioctl_download & ioctl_wr) on hardware; the poked register
+                         // in Verilator (see p0_req_w above), so the sprite colour PROM snoop actually
+                         // sees the download strobe in simulation (Round 50)
+    .ioctl_addr(ioctl_addr),
+    .ioctl_dout(ioctl_dout),
+
+    .sprite_color(k007420_pixel),
+    .sprite_active(k007420_active),
+
+    .sprite_sdram_req(sprite_sdram_req),
+    .sprite_sdram_addr(sprite_sdram_addr),
+    .sprite_sdram_dout(sprite_sdram_dout),
+    .sprite_sdram_ready(sprite_sdram_ready),
+    .sprite_traffic_active(1'b1), // no boot-time self-test phase in this core (unlike Rack 'Em
+                                   // Up's box8 loopback verify), so Port 3 traffic is always
+                                   // genuinely this module's own from time zero.
+
+    .diag_sdram_req_count(),
+    .diag_sdram_ready_count(),
+    .max_sdram_addr_out(),
+    .frame_has_nonzero_out(),
+    .max_addr_sprite_idx_out(),
+    .max_addr_code_lsb_out(),
+    .max_addr_attr_out(),
+    .max_addr_flags_out(),
+    .bram_debug_out(),
+    .last_fetch_addr_out(),
+    .last_fetch_nonzero_out(),
+    .last_fetch_sprite_idx_out(),
+    .last_fetch_code_lsb_out(),
+    .last_fetch_attr_out(),
+    .last_fetch_flags_out(),
+    .last_bram_addr_out(),
+    .last_bram_sprite_idx_out(),
+    .last_bram_code_lsb_out(),
+    .last_bram_attr_out(),
+    .last_bram_flags_out(),
+    .zoom_wrap_hit_out(),
+    .zoom_wrap_sprite_idx_out(),
+    .zoom_wrap_zoom_raw_out(),
+    .zoom_wrap_spr_y_out(),
+    .zoom_wrap_draw_x_out(),
+    .zoom_wrap_v_cnt_out(),
+    .zoom_wrap_tile_idx_out(),
+    .last_bram_was_sdram_out(),
+    .max_bram_addr_used_out(),
+    .small_sdram_addr_out(),
+    .small_sdram_idx_out(),
+    .small_sdram_code_lsb_out(),
+    .small_sdram_attr_out(),
+    .small_sdram_flags_out(),
+    .small_sdram_nonzero_out()
+);
+
+// ==============================================================================
+// PALETTE RAM (0x2400-0x245f, 96 bytes = 48 entries x 2-byte xBGR_555) --
+// confirmed exact size from bladestl_mame.cpp: `map(0x2400,
+// 0x245f).ram().w(...).share("palette")`. Smaller than Battlantis/Rack 'Em
+// Up's 512-byte/256-entry palette because bladestl's sprite colors (32-47)
+// go through an additional 256-byte lookup PROM ("proms" ROM region) before
+// indexing this RAM -- that indirect remap is NOT implemented yet (flagged
+// below), so sprite colors will be approximately, not exactly, correct
+// until it's added.
+// ==============================================================================
+(* ramstyle = "M10K" *) reg [7:0] bos_palette_ram [0:511];
+reg [7:0] bos_palette_dout;
+always @(posedge clk_sys) begin
+    if (palette_cs && !cpu_rw && cpu_e) bos_palette_ram[cpu_addr[8:0]] <= cpu_dout;
+    bos_palette_dout <= bos_palette_ram[cpu_addr[8:0]]; // registered read -- see bos_work_ram's own comment
+                                                          // above for why (async reads can't map to M10K)
+end
+
+// ==============================================================================
+// PLAYER INPUTS / DIP SWITCHES (MAME battlnts.cpp INPUT_PORTS rackemup, konamipt.h macros)
+// ==============================================================================
+// Controller buttons (J1 line): bit 4 = Shoot, bit 5 = English, bit 6 = Coin, bit 7 = Start. The second controller is player 2 with the same layout.
+// Keyboard: coin 5 and 6, start 1 and 2, player 2 on R F D G (up down left right) and A S (Shoot, English); player 1 keyboard play comes through
+// the framework's joystick mapping (joystick_0).
+reg kb_coin1, kb_coin2, kb_start1, kb_start2, kb_up2, kb_dn2, kb_lf2, kb_rt2, kb_b1_2, kb_b2_2;
+reg kb_old_stb;
+always @(posedge clk_sys) begin
+    kb_old_stb <= ps2_key[10];
+    if (kb_old_stb != ps2_key[10] && !ps2_key[8]) begin
+        case (ps2_key[7:0])
+            8'h2E: kb_coin1  <= ps2_key[9];   // 5
+            8'h36: kb_coin2  <= ps2_key[9];   // 6
+            8'h16: kb_start1 <= ps2_key[9];   // 1
+            8'h1E: kb_start2 <= ps2_key[9];   // 2
+            8'h2D: kb_up2    <= ps2_key[9];   // R
+            8'h2B: kb_dn2    <= ps2_key[9];   // F
+            8'h23: kb_lf2    <= ps2_key[9];   // D
+            8'h34: kb_rt2    <= ps2_key[9];   // G
+            8'h1C: kb_b1_2   <= ps2_key[9];   // A
+            8'h1B: kb_b2_2   <= ps2_key[9];   // S
+            default: ;
+        endcase
+    end
+end
+wire [31:0] joy1 = joystick_1 | {26'd0, kb_b2_2, kb_b1_2, kb_up2, kb_dn2, kb_lf2, kb_rt2};
+
+// P1 / P2: KONAMI8_B12: bit0 Left, bit1 Right, bit2 Up, bit3 Down, bit4 Button 1, bit5 Button 2, bit6 unused, bit7 unused (all active low).
+// joystick bits from hps_io are active high: 0 Right, 1 Left, 2 Down, 3 Up.
+wire [7:0] rack_p1 = { 1'b1, 1'b1, ~joystick_0[5], ~joystick_0[4], ~joystick_0[2], ~joystick_0[3], ~joystick_0[0], ~joystick_0[1] };
+wire [7:0] rack_p2 = { 1'b1, 1'b1, ~joy1[5],       ~joy1[4],       ~joy1[2],       ~joy1[3],       ~joy1[0],       ~joy1[1] };
+
+// DSW3 (0x2e03): bit0 coin 1, bit1 coin 2, bit2 service 1 (not wired), bit3 start 1, bit4 start 2, bit5 flip screen DIP (0 = on),
+// bit6 upright controls (1 = single, 0 = dual), bit7 service mode (active low).
+wire [7:0] rack_dsw3 = {
+    ~status[17],                    // bit7 service mode
+    ~status[18],                    // bit6 upright controls: OSD Single (0) -> 1
+    ~status[16],                    // bit5 flip screen
+    ~(joystick_1[7] | kb_start2),   // bit4 start 2
+    ~(joystick_0[7] | kb_start1),   // bit3 start 1
+    1'b1,                           // bit2 service 1
+    ~(joystick_1[6] | kb_coin2),    // bit1 coin 2
+    ~(joystick_0[6] | kb_coin1)     // bit0 coin 1
+};
+
+// DSW2 (0x2e04): bits 1:0 balls, bit 2 cabinet, bits 4:3 time to aim, bits 6:5 difficulty, bit 7 demo sounds (0 = on).
+// The OSD entries start with the factory default, so the index is translated into the real DIP encoding:
+//   Balls        index 0..3 = 3, 4, 7, 2     -> DIP 2, 1, 0, 3
+//   Time To Aim  index 0..3 = 20s, 17s, 15s, 25s -> DIP 2, 1, 0, 3
+//   Difficulty   index 0..3 = Normal, Easy, Difficult, Very Difficult -> DIP 2, 3, 1, 0
+function [1:0] rack_balls_aim(input [1:0] idx);
+    case (idx)
+        2'd0: rack_balls_aim = 2'd2;
+        2'd1: rack_balls_aim = 2'd1;
+        2'd2: rack_balls_aim = 2'd0;
+        default: rack_balls_aim = 2'd3;
+    endcase
+endfunction
+function [1:0] rack_diff(input [1:0] idx);
+    case (idx)
+        2'd0: rack_diff = 2'd2;
+        2'd1: rack_diff = 2'd3;
+        2'd2: rack_diff = 2'd1;
+        default: rack_diff = 2'd0;
+    endcase
+endfunction
+wire [7:0] rack_dsw2 = { status[15], rack_diff(status[14:13]), rack_balls_aim(status[12:11]), status[10], rack_balls_aim(status[20:19]) };
+
+// DSW1 (0x2e00): coinage, bits 3:0 Coin A, bits 7:4 Coin B (konamipt.h KONAMI_COINAGE_LOC). OSD index -> real nibble, factory default (1C 1C) first,
+// the last entry is Free Play (Coin A) / No Coin B.
+function [3:0] rack_coin_nibble(input [3:0] idx);
+    case (idx)
+        4'd0:  rack_coin_nibble = 4'hF; // 1C_1C
+        4'd1:  rack_coin_nibble = 4'h2; // 4C_1C
+        4'd2:  rack_coin_nibble = 4'h5; // 3C_1C
+        4'd3:  rack_coin_nibble = 4'h8; // 2C_1C
+        4'd4:  rack_coin_nibble = 4'h4; // 3C_2C
+        4'd5:  rack_coin_nibble = 4'h1; // 4C_3C
+        4'd6:  rack_coin_nibble = 4'h3; // 3C_4C
+        4'd7:  rack_coin_nibble = 4'h7; // 2C_3C
+        4'd8:  rack_coin_nibble = 4'hE; // 1C_2C
+        4'd9:  rack_coin_nibble = 4'h6; // 2C_5C
+        4'd10: rack_coin_nibble = 4'hD; // 1C_3C
+        4'd11: rack_coin_nibble = 4'hC; // 1C_4C
+        4'd12: rack_coin_nibble = 4'hB; // 1C_5C
+        4'd13: rack_coin_nibble = 4'hA; // 1C_6C
+        4'd14: rack_coin_nibble = 4'h9; // 1C_7C
+        default: rack_coin_nibble = 4'h0; // Free Play / No Coin B
+    endcase
+endfunction
+wire [7:0] rack_dsw1 = { rack_coin_nibble(status[28:25]), rack_coin_nibble(status[24:21]) };
+
+assign cpu_din =
+    fixed_rom_cs  ? rack_rom_dout        :
+    banked_rom_cs ? rack_rom_dout        :
+    (k007342_cs || ctrl_cs) ? k007342_dout :
+    k007420_cs    ? k007420_dout        :
+    scroll_cs     ? k007342_scroll_dout :
+    palette_cs    ? bos_palette_dout    :
+    dsw1_cs       ? rack_dsw1           :
+    p2_cs         ? rack_p2             :
+    p1_cs         ? rack_p1             :
+    dsw3_cs       ? rack_dsw3           :
+    dsw2_cs       ? rack_dsw2           :
+    8'hFF; // write-only registers and unmapped addresses read as open bus
+
+wire [7:0] bg_pixel     = k007342_pixel;
+// Round 13: k007420's own sprite palette bank is now data-driven
+// (sprite_color_base=4'd2 at the instantiation above), matching bladestl's
+// real 0x20-0x2f range instead of aliasing/wrapping to palette entry 0.
+// TODO (still not fixed): real hardware additionally remaps the sprite
+// pixel through a 256-byte lookup PROM (`color_prom[pixel-0x20]&0x0f)|0x20`,
+// from the "proms" ROM region) before it becomes the final palette index --
+// not loaded or applied yet, so sprite colors will be closer to correct
+// after this round but not pixel-exact.
+wire [7:0] sprite_pixel = k007420_pixel;
+wire bg_priority    = k007342_priority;
+// Round 53b: the old extra test sprite_pixel[3:0] != 0 was a leftover from before the colour PROM was loaded (then [3:0] was the raw ROM pixel). Now
+// sprite_pixel[3:0] is the PROM output, and the PROM maps raw pixel 1 of colours 0 and 1 and pixel 14 of colour 8 to 0, i.e. palette pen 0x20, which is
+// BLACK. MAME decides transparency on the raw pixel only, so those pixels are drawn black; here they were dropped: every sprite lost its black outline
+// pixels (228 of 280 test states, median 1125 pixels). k007420_active is already 'a raw non zero pixel was drawn here' (the line buffer is cleared to 0).
+wire sprite_visible = k007420_active && sprite_pixel[3:0] != 4'd0;
+wire show_sprite    = sprite_visible && !bg_priority;   // MAME redraws the priority (category 1) tiles OPAQUE over the sprites, pixel 0 included
+wire [7:0] pixel_color = show_sprite ? sprite_pixel : bg_pixel;
+
+reg [7:0] pal_byte_even, pal_byte_odd;
+wire [8:0] pal_addr_even = {pixel_color, 1'b0};
+wire [8:0] pal_addr_odd  = {pixel_color, 1'b1};
+always @(posedge clk_sys) begin
+    if (ce_pix) begin
+        pal_byte_even <= bos_palette_ram[pal_addr_even];
+        pal_byte_odd  <= bos_palette_ram[pal_addr_odd];
+    end
+end
+
+wire [4:0] pal_r = pal_byte_odd[4:0];
+wire [4:0] pal_g = {pal_byte_even[1:0], pal_byte_odd[7:5]};
+wire [4:0] pal_b = pal_byte_even[6:2];
+wire [7:0] video_r = {pal_r, pal_r[4:2]};
+wire [7:0] video_g = {pal_g, pal_g[4:2]};
+wire [7:0] video_b = {pal_b, pal_b[4:2]};
+
+// ==============================================================================
+// SOUND (Z80 + two YM3812), rtl/rackemup_sound.v. Z80 at 24 MHz / 6 = 4 MHz, YM3812 at 24 MHz / 8 = 3 MHz (MAME battlnts.cpp).
+// ==============================================================================
+reg [3:0] z80_ce_div = 0;
+always @(posedge clk_sys) z80_ce_div <= (z80_ce_div == 4'd11) ? 4'd0 : z80_ce_div + 4'd1;
+wire ce_z80 = (z80_ce_div == 4'd11);        // 48 MHz / 12 = 4 MHz
+reg [3:0] ym_ce_div = 0;
+always @(posedge clk_sys) ym_ce_div <= ym_ce_div + 4'd1;
+wire ce_ym3812 = (ym_ce_div == 4'd15);      // 48 MHz / 16 = 3 MHz
+
+wire ioctl_sound_we = ioctl_download && ioctl_wr && ioctl_addr >= 25'h18000 && ioctl_addr < 25'h20000;   // 32 KB sound ROM
+wire signed [15:0] audio_l, audio_r;
+rackemup_sound rackemup_sound (
+    .clk(clk_sys),
+    .rst(reset),
+    .ce_z80(ce_z80),
+    .ce_ym3812(ce_ym3812),
+    .snd_latch(sound_latch_to_z80),
+    .snd_irq(sound_irq_to_z80),
+    .ioctl_sound_addr(ioctl_addr[14:0]),
+    .ioctl_sound_data(ioctl_dout),
+    .ioctl_sound_we(ioctl_sound_we),
+    .audio_l(audio_l),
+    .audio_r(audio_r),
+    .irq_ack(z80_irq_ack)
+);
+assign AUDIO_L = audio_l;
+assign AUDIO_R = audio_r;
+
+// Round 50: pixel_color (k007342/k007420, registered on ce_pix) and the palette lookup (registered on ce_pix)
+// put the picture 2 pixel clocks behind h_cnt. DE and the colour gating used the undelayed active_area, so
+// the first 2 output pixels of every line were stale and the last 2 picture pixels were cut off (measured
+// against MAME: tiles and sprites both dh = +2). Delay the active window by the same 2 ce_pix instead.
+reg [1:0] active_pipe = 2'b00;
+always @(posedge clk_sys) if (ce_pix) active_pipe <= {active_pipe[0], active_area};
+wire active_disp = active_pipe[1];
+
+
+`ifdef BOS_SDRAM_MON
+// SDRAM health monitor rows: 11 rows of 16 boxes, row r at lines 20 + 14 r .. +9 (raw screenshot y = line - 16), box i at x = 16 i + 3 .. 12.
+// yellow = 1, blue = 0, most significant bit on the left. See rtl/sdram_mon.v for the meaning of each row.
+wire [9:0]  mon_vy   = v_cnt - 10'd20;
+wire [3:0]  mon_row  = mon_vy / 14;
+wire [3:0]  mon_off  = mon_vy % 14;
+wire [3:0]  mon_col  = h_cnt[7:4];
+wire        mon_box  = (h_cnt < 256) && (h_cnt[3:0] >= 4'd3) && (h_cnt[3:0] <= 4'd12) && (v_cnt >= 20) && (mon_row < 4'd11) && (mon_off < 4'd10);
+wire [3:0]  mon_rsel = 4'd10 - mon_row;
+wire [7:0]  mon_bit  = {mon_rsel, 4'd0} + {4'd0, 4'd15 - mon_col};   // (10 - row) * 16 + (15 - col)
+wire        mon_flag = mon_rows[mon_bit];
+wire        mon_hit  = active_disp & mon_box;
+wire [23:0] mon_rgb24 = mon_flag ? 24'hFFFF00 : 24'h0000FF;
+`endif
+
+// ---- video output ----------------------------------------------------------------------------------------------------------
+// Round 55: the picture now goes through the framework's arcade_video (sync polarity fix, blanking, gamma) exactly like Battlantis; its
+// outputs are the VGA_* pins, i.e. the raw 15 kHz raster for the analog (CRT) port, unrotated. screen_rotate takes the same signals and,
+// when Orientation is Horizontal, writes a rotated copy into DDR3 and switches the HDMI scaler to read it (framebuffer mode).
+`ifdef BOS_SDRAM_MON
+wire [7:0] out_r = mon_hit ? mon_rgb24[23:16] : (active_disp ? video_r : 8'd0);
+wire [7:0] out_g = mon_hit ? mon_rgb24[15:8]  : (active_disp ? video_g : 8'd0);
+wire [7:0] out_b = mon_hit ? mon_rgb24[7:0]   : (active_disp ? video_b : 8'd0);
+`else
+wire [7:0] out_r = active_disp ? video_r : 8'd0;
+wire [7:0] out_g = active_disp ? video_g : 8'd0;
+wire [7:0] out_b = active_disp ? video_b : 8'd0;
+`endif
+
+wire [7:0] av_vga_r, av_vga_g, av_vga_b;
+wire       av_vga_hs, av_vga_vs, av_vga_de;
+
+arcade_video #(256, 24) arcade_video (
+    .clk_video(clk_sys),
+    .ce_pix(ce_pix),
+    .RGB_in({out_r, out_g, out_b}),
+    .HBlank(~active_disp),
+    .VBlank(VBlank),
+    .HSync(HSync),
+    .VSync(VSync),
+    .CLK_VIDEO(CLK_VIDEO),
+    .CE_PIXEL(CE_PIXEL),
+    .VGA_R(av_vga_r),
+    .VGA_G(av_vga_g),
+    .VGA_B(av_vga_b),
+    .VGA_HS(av_vga_hs),
+    .VGA_VS(av_vga_vs),
+    .VGA_DE(av_vga_de),
+    .VGA_SL(VGA_SL),
+    .fx(3'b000),               // no scanline or hq2x entry in the OSD
+    .forced_scandoubler(1'b0), // the analog port always carries the raw 15 kHz raster, as on the real board
+    .gamma_bus(gamma_bus)
+);
+
+assign VGA_R  = av_vga_r;
+assign VGA_G  = av_vga_g;
+assign VGA_B  = av_vga_b;
+assign VGA_HS = av_vga_hs;
+assign VGA_VS = av_vga_vs;
+assign VGA_DE = av_vga_de;
+
+// The game's own flip request (K007342 register 0 bit 4, written by the game when its Flip Screen DIP is on) and the OSD Flip Monitor are
+// combined with an xor: one flips, both cancel. In the rotated path the flip selects the rotation direction (clockwise or counter
+// clockwise), in the raw path it is a 180 degree flip (screen_rotate ignores it while rotating).
+// Rack 'Em Up: the game's own flip request (K007342 reg 0 bit 4) is NOT used. This ROM toggles it at times a real board does not (a long
+// standing, never fully traced divergence in the old project notes, Rounds 213 to 221), which turned the HDMI picture upside down at boot.
+// Battlantis ignores it for the same reason (cocktail flip dropped as not authentic); the Flip Monitor option covers anyone who needs a flip.
+wire effective_flip = flip_monitor;
+wire video_rotated;
+
+screen_rotate screen_rotate (
+    .CLK_VIDEO(CLK_VIDEO),
+    .CE_PIXEL(CE_PIXEL),
+    .VGA_R(av_vga_r),
+    .VGA_G(av_vga_g),
+    .VGA_B(av_vga_b),
+    .VGA_HS(av_vga_hs),
+    .VGA_VS(av_vga_vs),
+    .VGA_DE(av_vga_de),
+    .rotate_ccw(effective_flip),
+    .no_rotate(no_rotate),
+    .flip(effective_flip),
+    .video_rotated(video_rotated),
+    .FB_EN(FB_EN),
+    .FB_FORMAT(FB_FORMAT),
+    .FB_WIDTH(FB_WIDTH),
+    .FB_HEIGHT(FB_HEIGHT),
+    .FB_BASE(FB_BASE),
+    .FB_STRIDE(FB_STRIDE),
+    .FB_VBL(FB_VBL),
+    .FB_LL(FB_LL),
+    .DDRAM_CLK(DDRAM_CLK),
+    .DDRAM_BUSY(DDRAM_BUSY),
+    .DDRAM_BURSTCNT(DDRAM_BURSTCNT),
+    .DDRAM_ADDR(DDRAM_ADDR),
+    .DDRAM_DIN(DDRAM_DIN),
+    .DDRAM_BE(DDRAM_BE),
+    .DDRAM_WE(DDRAM_WE),
+    .DDRAM_RD(DDRAM_RD)
+);
+
+reg  [26:0] act_cnt;
+always @(posedge clk_sys) act_cnt <= act_cnt + 1'd1; 
+assign LED_USER    = act_cnt[26]  ? act_cnt[25:18]  > act_cnt[7:0]  : act_cnt[25:18]  <= act_cnt[7:0];
+
+endmodule

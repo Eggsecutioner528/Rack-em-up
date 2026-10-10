@@ -1,0 +1,35 @@
+<misterromdescription>
+    <name>Rack 'Em Up / The Hustler</name>
+    <mameversion>0220</mameversion>
+    <setname>rackemup</setname>
+    <year>1987</year>
+    <manufacturer>Konami</manufacturer>
+    <category>Sports</category>
+    <rbf>RackEmUp</rbf>
+
+    <!-- One core, one MRA, three versions: Rack 'Em Up (version L), The Hustler (Japan version M) and The Hustler (Japan version J).
+         Pick the version in the OSD (Game Version); the core restarts the game when it changes.
+         All the ROM sets are loaded together, in this order (the core keeps what it needs for the chosen version):
+           0x00000 banked ROM (shared)        765_j03.8e   rackemup.zip
+           0x10000 fixed ROM, Rack 'Em Up     765_l02.7e   rackemup.zip
+           0x18000 sound ROM (shared)         765_j01.10a  rackemup.zip
+           0x20000 sprites, Rack 'Em Up       765_l05.13e  rackemup.zip
+           0x60000 tiles, Rack 'Em Up         765_l04.13a  rackemup.zip
+           0xA0000 fixed ROM, Hustler M       765_m02.7e   thehustl.zip
+           0xA8000 fixed ROM, Hustler J       765_j02.7e   thehustlj.zip
+           0xB0000 sprites, Hustler           765_e05.13e  thehustl.zip
+           0xF0000 tiles, Hustler             765_e04.13a  thehustl.zip
+         You need rackemup.zip, thehustl.zip and thehustlj.zip in the games/mame folder. The MiSTer searches the zips in the order
+         listed in the zip attribute for every file; 'a|b' alternate names inside a part line are NOT supported (tested). -->
+    <rom index="0" zip="rackemup.zip|thehustl.zip|thehustlj.zip" md5="none">
+        <part name="765_j03.8e" />   <!-- 64KB banked ROM -->
+        <part name="765_l02.7e" />   <!-- 32KB fixed ROM, Rack 'Em Up -->
+        <part name="765_j01.10a" />  <!-- 32KB sound ROM -->
+        <part name="765_l05.13e" />  <!-- 256KB sprites, Rack 'Em Up -->
+        <part name="765_l04.13a" />  <!-- 256KB tiles, Rack 'Em Up -->
+        <part name="765_m02.7e" />   <!-- 32KB fixed ROM, The Hustler version M -->
+        <part name="765_j02.7e" />   <!-- 32KB fixed ROM, The Hustler version J -->
+        <part name="765_e05.13e" />  <!-- 256KB sprites, The Hustler -->
+        <part name="765_e04.13a" />  <!-- 256KB tiles, The Hustler -->
+    </rom>
+</misterromdescription>

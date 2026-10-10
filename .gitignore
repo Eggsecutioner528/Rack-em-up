@@ -1,0 +1,76 @@
+db
+greybox_tmp
+incremental_db
+output_files
+simulation
+hc_output
+scaler
+hps_isw_handoff
+vip
+*_sim
+.qsys_edit
+PLLJ_PLLSPE_INFO.txt
+*.bak
+*.orig
+*.rej
+*.qdf
+*.rpt
+*.smsg
+*.summary
+*.done
+*.jdi
+*.pin
+*.sof
+*.qws
+*.ppf
+*.ddb
+build_id.v
+c5_pin_model_dump.txt
+*.sopcinfo
+*.csv
+*.f
+*.cmp
+*.sip
+*.spd
+*.bsf
+*~
+*.xml
+*_netlist
+*.cdf
+**/.DS_Store
+
+# Copyrighted arcade ROM dumps -- never commit actual ROM data
+*.hex
+# Exceptions: these .hex files are NOT rom data, they're self-generated
+# synthesis lookup tables the k007420 sprite renderer's own $readmemh calls
+# depend on to build at all (ported from Rack 'Em Up, same reasoning as
+# that project's own .gitignore) -- must be tracked or a fresh clone won't
+# compile.
+!rtl/tile_bound1.hex
+!rtl/tile_bound2.hex
+!rtl/tile_bound3.hex
+!rtl/tile_bound4.hex
+!rtl/zoom_recip.hex
+*.zip
+bladestl_roms/
+bladestl_extract/
+bladestl_extracted/
+
+# Quartus compile logs (regenerated every compile, not meaningful history)
+compile_*.log
+compile_log*.txt
+quartus_compile_log.txt
+
+# Misc local/session artifacts
+MiSTer.ini
+MiSTer.ini.fetched
+NUL
+__pycache__/
+verilator_bos/roms/
+*.ppm
+# verilator_bos/filelist.f is a real, hand-written Verilator source-file
+# list, not a Quartus-generated artifact -- the broad `*.f` rule above would
+# otherwise silently exclude it (essential for anyone to rebuild the harness).
+!verilator_bos/filelist.f
+verilator_bos/vcd_out/
+*.vcd
