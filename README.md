@@ -2,7 +2,7 @@
 
 A MiSTer FPGA port of Konami's 1987 arcade pool game **Rack 'Em Up**, and its Japanese release **The Hustler**, written from scratch in Verilog and SystemVerilog around the real board's chips.
 
-**Version 1.1** (release `releases/RackEmUp_20261010_v1.1.rbf`). Version 1.1 adds a CRT picture rotation for the analog output (through a DDR3 buffer), a Sound Settings page with a stereo option, a DIP Switches page, and a Start 2 button.
+**Version 1.1.1** (release `releases/RackEmUp_20261010_v1.1.1.rbf`). Version 1.1.1 removes the Difficulty, Cabinet and Flip Screen DIP entries, which are not part of this board's own test menu. Version 1.1 added a CRT picture rotation for the analog output (through a DDR3 buffer), a Sound Settings page with a stereo option, a DIP Switches page, and a Start 2 button.
 
 One core, one `.mra`: you choose the version in the OSD (**Game Version**):
 
@@ -28,7 +28,7 @@ You need the MiSTer SDRAM module (the sprite ROM lives in SDRAM) and your own le
 - `thehustl.zip` (MAME name `thehustl`, version M, holds only the files that differ from Rack 'Em Up)
 - `thehustlj.zip` (MAME name `thehustlj`, version J, holds only the files that differ from Rack 'Em Up)
 
-1. Copy `RackEmUp_20261010_v1.1.rbf` to `/media/fat/_Arcade/cores/`.
+1. Copy `RackEmUp_20261010_v1.1.1.rbf` to `/media/fat/_Arcade/cores/`.
 2. Copy `RackEmUp.mra` to `/media/fat/_Arcade/`.
 3. Put the three zips in `/media/fat/games/mame/`.
 4. Start **Rack 'Em Up / The Hustler** from the Arcade menu.
@@ -62,11 +62,8 @@ The MiSTer's own menu keeps the same size on the CRT in both orientations.
 
 - Balls: 3, 4, 7 or 2
 - Time To Aim: 20s, 17s, 15s or 25s (the first shot of a rack gets 5 seconds more)
-- Difficulty: Normal, Easy, Difficult, Very Difficult
 - Demo Sounds: On or Off
-- Cabinet: Upright or Cocktail
 - Upright Controls: Single or Dual (not used by The Hustler)
-- Flip Screen: Off or On
 - Service Mode: Off or On (toggling it restarts the game, because the game only reads the service switch at start up)
 - Coin A and Coin B: 1 coin 1 credit by default, with the full 16 entry Konami coinage table and a Free Play or No Coin B entry
 
@@ -83,14 +80,6 @@ The MiSTer's own menu keeps the same size on the CRT in both orientations.
 3. The whole tile ROM lives in on chip memory and the sprite ROM is read through an SDRAM cache. This removed the black lines and holes in the picture that earlier builds, which read tiles from SDRAM, could not get rid of.
 4. The CRT rotation works through a DDR3 buffer: every pixel is also written rotated into DDR3 and read back line by line at the board's own timing, so the analog sync stays exactly the arcade sync.
 5. All three versions are loaded into SDRAM at once; a small copy engine moves the chosen version's program and tile ROM into the on chip memory and restarts the game whenever Game Version changes.
-
----
-
-## Known Open Issues
-
-- The CRT rotation costs one frame of delay on the analog picture.
-- Game speed and sound have not been measured side by side against a real board.
-- The game sets the K007342 flip bit in places where it does not in MAME (the cause is not known); the core ignores it.
 
 ---
 

@@ -126,11 +126,8 @@ localparam CONF_STR = {
 	"P2,DIP Switches;",
 	"P2O[20:19],Balls,3,4,7,2;",
 	"P2O[12:11],Time To Aim,20s (Stage 1: 25s),17s (Stage 1: 22s),15s (Stage 1: 20s),25s (Stage 1: 30s);",
-	"P2O[14:13],Difficulty,Normal,Easy,Difficult,Very Difficult;",
 	"P2O[15],Demo Sounds,On,Off;",
-	"P2O[10],Cabinet,Upright,Cocktail;",
 	"P2O[18],Upright Controls,Single,Dual;",
-	"P2O[16],Flip Screen,Off,On;",
 	"P2O[17],Service Mode,Off,On;",
 	"P2-;",
 	"P2O[24:21],Coin A,1C 1C,4C 1C,3C 1C,2C 1C,3C 2C,4C 3C,3C 4C,2C 3C,1C 2C,2C 5C,1C 3C,1C 4C,1C 5C,1C 6C,1C 7C,Free Play;",
@@ -888,7 +885,7 @@ wire [7:0] rack_p2 = { 1'b1, 1'b1, ~joy1[5],       ~joy1[4],       ~joy1[2],    
 wire [7:0] rack_dsw3 = {
     ~status[17],                    // bit7 service mode
     ~status[18],                    // bit6 upright controls: OSD Single (0) -> 1
-    ~status[16],                    // bit5 flip screen
+    1'b1,                           // bit5 flip screen DIP: not a DIP of this board's test menu, fixed Off (the OSD Flip Monitor option covers it)
     ~(joystick_1[7] | joystick_0[8] | kb_start2),   // bit4 start 2 (controller 2 Start, or the Start 2 button of controller 1, or key 2)
     ~(joystick_0[7] | kb_start1),   // bit3 start 1
     1'b1,                           // bit2 service 1
@@ -917,7 +914,8 @@ function [1:0] rack_diff(input [1:0] idx);
         default: rack_diff = 2'd0;
     endcase
 endfunction
-wire [7:0] rack_dsw2 = { status[15], rack_diff(status[14:13]), rack_balls_aim(status[12:11]), status[10], rack_balls_aim(status[20:19]) };
+// Difficulty (bits 6:5) and Cabinet (bit 2) are not in this board's test menu, so they are fixed at the factory values (Normal, Upright) and have no OSD entry.
+wire [7:0] rack_dsw2 = { status[15], rack_diff(2'd0), rack_balls_aim(status[12:11]), 1'b0, rack_balls_aim(status[20:19]) };
 
 // DSW1 (0x2e00): coinage, bits 3:0 Coin A, bits 7:4 Coin B (konamipt.h KONAMI_COINAGE_LOC). OSD index -> real nibble, factory default (1C 1C) first,
 // the last entry is Free Play (Coin A) / No Coin B.
