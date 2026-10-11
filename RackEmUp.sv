@@ -127,7 +127,6 @@ localparam CONF_STR = {
 	"P2O[20:19],Balls,3,4,7,2;",
 	"P2O[12:11],Time To Aim,20s (Stage 1: 25s),17s (Stage 1: 22s),15s (Stage 1: 20s),25s (Stage 1: 30s);",
 	"P2O[15],Demo Sounds,On,Off;",
-	"P2O[18],Upright Controls,Single,Dual;",
 	"P2O[17],Service Mode,Off,On;",
 	"P2-;",
 	"P2O[24:21],Coin A,1C 1C,4C 1C,3C 1C,2C 1C,3C 2C,4C 3C,3C 4C,2C 3C,1C 2C,2C 5C,1C 3C,1C 4C,1C 5C,1C 6C,1C 7C,Free Play;",
@@ -884,7 +883,7 @@ wire [7:0] rack_p2 = { 1'b1, 1'b1, ~joy1[5],       ~joy1[4],       ~joy1[2],    
 // bit6 upright controls (1 = single, 0 = dual), bit7 service mode (active low).
 wire [7:0] rack_dsw3 = {
     ~status[17],                    // bit7 service mode
-    ~status[18],                    // bit6 upright controls: OSD Single (0) -> 1
+    1'b1,                           // bit6 upright controls: not in this board's test menu, fixed at Single
     1'b1,                           // bit5 flip screen DIP: not a DIP of this board's test menu, fixed Off (the OSD Flip Monitor option covers it)
     ~(joystick_1[7] | joystick_0[8] | kb_start2),   // bit4 start 2 (controller 2 Start, or the Start 2 button of controller 1, or key 2)
     ~(joystick_0[7] | kb_start1),   // bit3 start 1

@@ -63,7 +63,6 @@ The MiSTer's own menu keeps the same size on the CRT in both orientations.
 - Balls: 3, 4, 7 or 2
 - Time To Aim: 20s, 17s, 15s or 25s (the first shot of a rack gets 5 seconds more)
 - Demo Sounds: On or Off
-- Upright Controls: Single or Dual (not used by The Hustler)
 - Service Mode: Off or On (toggling it restarts the game, because the game only reads the service switch at start up)
 - Coin A and Coin B: 1 coin 1 credit by default, with the full 16 entry Konami coinage table and a Free Play or No Coin B entry
 
