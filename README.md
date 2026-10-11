@@ -2,7 +2,7 @@
 
 A MiSTer FPGA port of Konami's 1987 arcade pool game **Rack 'Em Up**, and its Japanese release **The Hustler**, written from scratch in Verilog and SystemVerilog around the real board's chips.
 
-**Version 1.0** (release `releases/RackEmUp_20261010.rbf`).
+**Version 1.1** (release `releases/RackEmUp_20261010_v1.1.rbf`). Version 1.1 adds a CRT picture rotation for the analog output (through a DDR3 buffer), a Sound Settings page with a stereo option, a DIP Switches page, and a Start 2 button.
 
 One core, one `.mra`: you choose the version in the OSD (**Game Version**):
 
@@ -10,7 +10,7 @@ One core, one `.mra`: you choose the version in the OSD (**Game Version**):
 - The Hustler (Japan version M)
 - The Hustler (Japan version J)
 
-This is the "Simple Arcade" build: the picture on the HDMI output can be rotated, flipped and shaped from the OSD, and the analog (CRT) output is left as the raw, unrotated raster the arcade board itself produces, with only picture position options.
+This is the "Simple Arcade" build. HDMI and the analog (CRT) output have independent settings in the OSD: the HDMI picture can be rotated, flipped and shaped, and the analog output is either the raw, unrotated 15 kHz raster the arcade board produces (the default) or a rotated, scaled picture for a normally mounted CRT, with picture position and flip options.
 
 ---
 
@@ -28,7 +28,7 @@ You need the MiSTer SDRAM module (the sprite ROM lives in SDRAM) and your own le
 - `thehustl.zip` (MAME name `thehustl`, version M, holds only the files that differ from Rack 'Em Up)
 - `thehustlj.zip` (MAME name `thehustlj`, version J, holds only the files that differ from Rack 'Em Up)
 
-1. Copy `RackEmUp_20261010.rbf` to `/media/fat/_Arcade/cores/`.
+1. Copy `RackEmUp_20261010_v1.1.rbf` to `/media/fat/_Arcade/cores/`.
 2. Copy `RackEmUp.mra` to `/media/fat/_Arcade/`.
 3. Put the three zips in `/media/fat/games/mame/`.
 4. Start **Rack 'Em Up / The Hustler** from the Arcade menu.
@@ -39,21 +39,27 @@ All three ROM sets are loaded together. If you only own one of them the `.mra` c
 
 ## OSD Options
 
-The video options live in two sub menus, **HDMI Video** and **CRT Video** (press Back to return to the main menu).
+The menu has **Game Version** at the top, then three sub menus: **Video**, **Sound Settings** and **DIP Switches**.
 
-**HDMI Video**
+**Video**
 
-- **Orientation**: Horizontal (default) rotates the picture so the vertical monitor game stands upright on a normal landscape display, with black bars at the sides. Vertical sends the raw raster, for a display that is itself mounted vertically.
-- **Flip Monitor**: turns the picture 180 degrees. The game's own flip request is ignored on purpose (it toggles at times a real board does not), so only this option flips the picture.
+- **HDMI Orientation**: Horizontal (default) rotates the picture so the vertical monitor game stands upright on a normal landscape display, with black bars at the sides. Vertical sends the raw raster, for a display that is itself mounted vertically.
+- **Flip Monitor**: turns the HDMI picture 180 degrees. The game's own flip request is ignored on purpose (it toggles at times a real board does not), so only this option flips the picture.
 - **Aspect ratio**: Original (the arcade monitor's 4:3, shown as 3:4 once rotated), Pixel Perfect (square pixels), Full Screen.
+- **CRT Orientation** (analog output only, independent of the HDMI options): Vertical (raw) is the unrotated 15 kHz raster of the real board, for a vertical arcade monitor or a CRT turned on its side. Horizontal (rotated) rotates and scales the picture through a DDR3 buffer for a normally mounted CRT. The rotated picture follows the same sync and costs one frame of delay.
+- **CRT Flip**: turns the CRT picture by 180 degrees in either orientation (counter clockwise instead of clockwise when rotated, upside down when raw). It is the only rotation control.
+- **CRT Size** (rotated picture): Auto picks the largest picture that fits the frame, or choose one of 16 sizes from 98x112 to 203x232.
+- **CRT V Position** and **CRT H Position**: move the picture by shifting the sync, in both orientations. The two options always mean the direction you see on the CRT in the chosen orientation.
 
-**CRT Video** (analog output only, HDMI is not affected)
+The MiSTer's own menu keeps the same size on the CRT in both orientations.
 
-- **CRT V Position** and **CRT H Position** nudge the picture on the tube. The analog output is not rotated or reshaped: it carries the raw 15 kHz raster of the real board, so a vertical arcade monitor or a CRT turned on its side shows the game exactly as the original hardware would.
+**Sound Settings** (the first entry of every option is the original sound)
 
-**Game settings** (the first entry of every option is the factory default, so a fresh install plays like the real board):
+- **FM Chip 1 Volume** and **FM Chip 2 Volume**: 100% (the real board) down to Off.
+- **Output**: Mono (original, both chips mixed) or Stereo (chip 1 on the left, chip 2 on the right).
 
-- **Game Version**: Rack 'Em Up (L), The Hustler (M), The Hustler (J). Changing it restarts the game.
+**DIP Switches** (the first entry of every option is the factory default, so a fresh install plays like the real board):
+
 - Balls: 3, 4, 7 or 2
 - Time To Aim: 20s, 17s, 15s or 25s (the first shot of a rack gets 5 seconds more)
 - Difficulty: Normal, Easy, Difficult, Very Difficult
@@ -64,7 +70,9 @@ The video options live in two sub menus, **HDMI Video** and **CRT Video** (press
 - Service Mode: Off or On (toggling it restarts the game, because the game only reads the service switch at start up)
 - Coin A and Coin B: 1 coin 1 credit by default, with the full 16 entry Konami coinage table and a Free Play or No Coin B entry
 
-**Controls** are mirrored for the two players: the first controller is player 1 and the second controller is player 2, each with the same layout. The buttons are Shoot, English, Coin and Start. Map each controller model once in MiSTer's own button mapping screen (Define joystick buttons); two identical pads share the mapping. On the keyboard, 5 and 6 are the coins, 1 and 2 are the starts, and player 2 plays on R F D G with A and S for the buttons.
+**Game Version**: Rack 'Em Up (L), The Hustler (M), The Hustler (J). Changing it restarts the game.
+
+**Controls** are mirrored for the two players: the first controller is player 1 and the second controller is player 2, each with the same layout. The buttons are Shoot, English, Coin, Start and Start 2. Map each controller model once in MiSTer's own button mapping screen (Define joystick buttons); two identical pads share the mapping, and you can press Space on a keyboard to skip a button you do not need (Start 2 is last). With one controller, Start 2 lets you start a two player game; the game alternates the players on the same pad. On the keyboard, 5 and 6 are the coins, 1 and 2 are the starts, and player 2 plays on R F D G with A and S for the buttons.
 
 ---
 
@@ -73,13 +81,14 @@ The video options live in two sub menus, **HDMI Video** and **CRT Video** (press
 1. The real board was studied from the schematics and the MAME driver (`battlnts.cpp`, which covers the whole GX765 and GX777 family).
 2. The CPU, sound and chip cores were brought in from open projects (see the credits) and checked against MAME frame by frame, using a GPU accelerated pixel comparison of this core's picture against MAME's. That is how a one scanline offset of the sprite layer was found: the pool player cutscenes and the title screen now match MAME pixel for pixel in nearly every frame (a few transition frames differ slightly).
 3. The whole tile ROM lives in on chip memory and the sprite ROM is read through an SDRAM cache. This removed the black lines and holes in the picture that earlier builds, which read tiles from SDRAM, could not get rid of.
-4. All three versions are loaded into SDRAM at once; a small copy engine moves the chosen version's program and tile ROM into the on chip memory and restarts the game whenever Game Version changes.
+4. The CRT rotation works through a DDR3 buffer: every pixel is also written rotated into DDR3 and read back line by line at the board's own timing, so the analog sync stays exactly the arcade sync.
+5. All three versions are loaded into SDRAM at once; a small copy engine moves the chosen version's program and tile ROM into the on chip memory and restarts the game whenever Game Version changes.
 
 ---
 
 ## Known Open Issues
 
-- The analog output is the raw raster and is not rotated: a vertical arcade monitor or a CRT turned on its side is needed to see the game upright on it.
+- The CRT rotation costs one frame of delay on the analog picture.
 - Game speed and sound have not been measured side by side against a real board.
 - The game sets the K007342 flip bit in places where it does not in MAME (the cause is not known); the core ignores it.
 

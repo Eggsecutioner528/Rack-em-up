@@ -67,6 +67,23 @@ wire [11:0] rot_ary = (ar == 2'd0) ? 12'd4 : (ar == 2'd1) ? 12'd8 : 12'd0;
 assign VIDEO_ARX = no_rotate ? raw_arx : rot_arx;
 assign VIDEO_ARY = no_rotate ? raw_ary : rot_ary;
 
+// CRT rotation (analog output) through the DDR3 hub. CRT Orientation Horizontal (status[53]) only takes effect while the HDMI picture is rotated too
+// (the hub shares the rotated write path), hence the and with ~no_rotate. CRT Size (status[57:54]) is listed default first, then larger, then smaller.
+wire        crt_rot_sel    = status[53];                 // CRT Orientation Horizontal (rotated)
+wire        crt_flip       = status[59];                 // CRT Flip (180 degrees), in both orientations
+wire  [4:0] crt_size_idx   = status[58:54];              // 0 Auto, 1..16 the listed sizes (default first, then larger, then smaller)
+wire        crt_size_auto  = (crt_size_idx == 5'd0) || (crt_size_idx > 5'd16);
+wire  [3:0] crt_size_n     = crt_size_idx[3:0] - 4'd1;   // 0..15 when not Auto
+wire  [3:0] crt_size       = (crt_size_n <= 4'd3) ? (4'd12 + crt_size_n) : (4'd15 - crt_size_n);
+// CRT position: the V and H options always mean what you see on the CRT. Rotated, the horizontal option moves along the raster lines (hs shift);
+// raw (a portrait CRT, raster up and down) the vertical option does.
+wire  [3:0] crt_hs_step    = crt_rot_sel ? status[49:46] : status[45:42];
+wire  [3:0] crt_vs_step    = crt_rot_sel ? status[45:42] : status[49:46];
+wire  [7:0] crt_r, crt_g, crt_b;
+wire        crt_hs, crt_vs, crt_de;
+wire        crt_ready;
+wire  [1:0] crt_status;
+
 `include "build_id.v"
 // Round 9 (2026-09-12): real DIP switches, confirmed directly from
 // bladestl_mame.cpp's INPUT_PORTS_START(bladestl_joy)/konamipt.h's
@@ -77,31 +94,47 @@ assign VIDEO_ARY = no_rotate ? raw_ary : rot_ary;
 localparam CONF_STR = {
 	"RackEmUp;;",
 	"-;",
-	"P1,HDMI Video;",
-	"P1O[1],Orientation,Horizontal,Vertical;",
+	// Which game to run comes first, then a gap, then the two sub pages (Video and DIP Switches), then the reset entries.
+	"O[41:40],Game Version,Rack 'Em Up (L),The Hustler (M),The Hustler (J);",
+	"-;",
+	"P1,Video;",
+	"P1O[1],HDMI Orientation,Horizontal,Vertical;",
 	"P1O[2],Flip Monitor,Off,On;",
 	"P1O[4:3],Aspect ratio,Original,Pixel Perfect,Full Screen;",
-	"P2,CRT Video;",
-	// CRT position (analog output only; HDMI is not affected). The arcade monitor stands in portrait, so the raster's horizontal axis runs
-	// up and down on the tube: "CRT V Position" moves the picture along the raster lines (sync pulse earlier, one step = 3 pixel clocks),
-	// "CRT H Position" moves it along the raster columns (vertical sync later, one step = 2 lines).
-	"P2O[45:42],CRT V Position,0,3,6,9,12,15,18,21,24,27,30,33,36,39,42,45;",
-	"P2O[49:46],CRT H Position,0,2,4,6,8,10,12,14,16,18,20,22,24,26,28,30;",
-	"-;",
+	"P1-;",
+	// CRT (analog output), independent of the HDMI options above. Orientation Vertical (raw) is the unrotated 15 kHz raster of the real board (a vertical
+	// monitor, or a CRT on its side). Horizontal (rotated) rotates and scales the picture through a DDR3 buffer (rtl/ddr_rotate_hub.sv) for a normally
+	// mounted CRT, Size picks the picture size (Auto = the largest that fits the frame). CRT Flip turns the CRT picture by 180 degrees in either
+	// orientation (counter clockwise instead of clockwise when rotated, upside down when raw) and it is the only rotation control.
+	// Position works in both modes by shifting the sync, and always means the direction you see on the CRT in the chosen orientation: in the rotated
+	// mode the horizontal option moves the picture along the raster lines (3 pixel clocks a step) and the vertical option along the raster columns
+	// (2 lines a step); in the raw mode the two swap roles (the raster runs up and down on a CRT that stands in portrait). No options are hidden.
+	"P1O[53],CRT Orientation,Vertical (raw),Horizontal (rotated);",
+	"P1O[59],CRT Flip,Off,On;",
+	"P1O[58:54],CRT Size,Auto,182x208,189x216,196x224,203x232,175x200,168x192,161x184,154x176,147x168,140x160,133x152,126x144,119x136,112x128,105x120,98x112;",
+	"P1O[45:42],CRT V Position,0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15;",
+	"P1O[49:46],CRT H Position,0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15;",
+	// Sound Settings: the board mixes its two YM3812 chips to mono; here each chip gets a level (100% is the real board) and the output can be split
+	// stereo (chip 1 left, chip 2 right). Everything on its first entry is bit for bit the original audio (rtl/snd_mixer.v). Status bits 29 to 39.
+	"P3,Sound Settings;",
+	"P3O[33:29],FM Chip 1 Volume,100%,94%,88%,81%,75%,69%,63%,56%,50%,44%,38%,31%,25%,19%,13%,6%,Off;",
+	"P3O[38:34],FM Chip 2 Volume,100%,94%,88%,81%,75%,69%,63%,56%,50%,44%,38%,31%,25%,19%,13%,6%,Off;",
+	"P3O[39],Output,Mono (original),Stereo (chip 1 left, chip 2 right);",
 	// Factory defaults: with every option on its first entry the DIP switches read exactly as MAME's rackemup defaults (3 balls, 20s to aim,
 	// difficulty Normal, demo sounds On, upright with single controls, coinage 1 coin 1 credit). The entry order is therefore NOT the order of
 	// the real DIP tables, see the translation in the DIP section.
-	"O[41:40],Game Version,Rack 'Em Up (L),The Hustler (M),The Hustler (J);",
-	"O[20:19],Balls,3,4,7,2;",
-	"O[12:11],Time To Aim,20s (Stage 1: 25s),17s (Stage 1: 22s),15s (Stage 1: 20s),25s (Stage 1: 30s);",
-	"O[14:13],Difficulty,Normal,Easy,Difficult,Very Difficult;",
-	"O[15],Demo Sounds,On,Off;",
-	"O[10],Cabinet,Upright,Cocktail;",
-	"O[18],Upright Controls,Single,Dual;",
-	"O[16],Flip Screen,Off,On;",
-	"O[17],Service Mode,Off,On;",
-	"O[24:21],Coin A,1C 1C,4C 1C,3C 1C,2C 1C,3C 2C,4C 3C,3C 4C,2C 3C,1C 2C,2C 5C,1C 3C,1C 4C,1C 5C,1C 6C,1C 7C,Free Play;",
-	"O[28:25],Coin B,1C 1C,4C 1C,3C 1C,2C 1C,3C 2C,4C 3C,3C 4C,2C 3C,1C 2C,2C 5C,1C 3C,1C 4C,1C 5C,1C 6C,1C 7C,No Coin B;",
+	"P2,DIP Switches;",
+	"P2O[20:19],Balls,3,4,7,2;",
+	"P2O[12:11],Time To Aim,20s (Stage 1: 25s),17s (Stage 1: 22s),15s (Stage 1: 20s),25s (Stage 1: 30s);",
+	"P2O[14:13],Difficulty,Normal,Easy,Difficult,Very Difficult;",
+	"P2O[15],Demo Sounds,On,Off;",
+	"P2O[10],Cabinet,Upright,Cocktail;",
+	"P2O[18],Upright Controls,Single,Dual;",
+	"P2O[16],Flip Screen,Off,On;",
+	"P2O[17],Service Mode,Off,On;",
+	"P2-;",
+	"P2O[24:21],Coin A,1C 1C,4C 1C,3C 1C,2C 1C,3C 2C,4C 3C,3C 4C,2C 3C,1C 2C,2C 5C,1C 3C,1C 4C,1C 5C,1C 6C,1C 7C,Free Play;",
+	"P2O[28:25],Coin B,1C 1C,4C 1C,3C 1C,2C 1C,3C 2C,4C 3C,3C 4C,2C 3C,1C 2C,2C 5C,1C 3C,1C 4C,1C 5C,1C 6C,1C 7C,No Coin B;",
 	"-;",
 	"T[0],Reset;",
 	"R[0],Reset and close OSD;",
@@ -109,7 +142,7 @@ localparam CONF_STR = {
 	        // If CONF_STR options are changed in incompatible way, then change version number too,
 			  // so all options will get default values on first start.
 	// The J1 line is metadata, not a menu row, but its position shifts which item the OSD activates: it must sit right before the version line.
-	"J1,Shoot,English,Coin,Start;",
+	"J1,Shoot,English,Coin,Start,Start 2;",
 	"V,v",`BUILD_DATE
 };
 
@@ -147,7 +180,7 @@ hps_io #(.CONF_STR(CONF_STR)) hps_io
 
 	.buttons(buttons),
 	.status(status),
-	.status_menumask({status[5]}),
+	.status_menumask(16'd0),   // no option is hidden
 
 	.joystick_0(joystick_0),
 	.joystick_1(joystick_1),
@@ -469,12 +502,12 @@ wire active_area = (h_cnt < 256) && (v_cnt >= 16 && v_cnt < 240);
 // Round 55: the whole sync pulse can be moved earlier by CRT_H_SHIFT pixel clocks. The picture itself (h_cnt, the active window, the HDMI
 // path which only uses the data enable) does not move; on the analog output the sync pulse arrives earlier relative to the picture, so the
 // picture appears further to the right on the CRT. Front porch 48 / sync 32 / back porch 48 at shift 0.
-wire [5:0]  CRT_H_SHIFT = {status[45:42], 1'b0} + status[45:42];       // 3 pixel clocks per step
+wire [5:0]  CRT_H_SHIFT = {crt_hs_step, 1'b0} + crt_hs_step;       // 3 pixel clocks per step
 wire [10:0] hs_start = 11'd304 - {5'd0, CRT_H_SHIFT};
 wire [10:0] hs_end   = 11'd336 - {5'd0, CRT_H_SHIFT};
 wire HSync   = (h_cnt >= hs_start && h_cnt < hs_end);
 // Vertical sync later by 2 lines per step (CRT Horizontal Position on the portrait monitor); start wraps around the 264 line frame.
-wire [8:0] vs_start = (9'd244 + {3'd0, status[49:46], 1'b0} >= 9'd264) ? (9'd244 + {3'd0, status[49:46], 1'b0} - 9'd264) : (9'd244 + {3'd0, status[49:46], 1'b0});
+wire [8:0] vs_start = (9'd244 + {3'd0, crt_vs_step, 1'b0} >= 9'd264) ? (9'd244 + {3'd0, crt_vs_step, 1'b0} - 9'd264) : (9'd244 + {3'd0, crt_vs_step, 1'b0});
 wire [8:0] vs_end   = (vs_start + 9'd3 >= 9'd264) ? (vs_start + 9'd3 - 9'd264) : (vs_start + 9'd3);
 wire VSync   = (vs_start < vs_end) ? (v_cnt >= vs_start && v_cnt < vs_end) : (v_cnt >= vs_start || v_cnt < vs_end);
 wire HBlank  = ~(h_cnt < 256);
@@ -856,7 +889,7 @@ wire [7:0] rack_dsw3 = {
     ~status[17],                    // bit7 service mode
     ~status[18],                    // bit6 upright controls: OSD Single (0) -> 1
     ~status[16],                    // bit5 flip screen
-    ~(joystick_1[7] | kb_start2),   // bit4 start 2
+    ~(joystick_1[7] | joystick_0[8] | kb_start2),   // bit4 start 2 (controller 2 Start, or the Start 2 button of controller 1, or key 2)
     ~(joystick_0[7] | kb_start1),   // bit3 start 1
     1'b1,                           // bit2 service 1
     ~(joystick_1[6] | kb_coin2),    // bit1 coin 2
@@ -982,6 +1015,9 @@ rackemup_sound rackemup_sound (
     .ioctl_sound_addr(ioctl_addr[14:0]),
     .ioctl_sound_data(ioctl_dout),
     .ioctl_sound_we(ioctl_sound_we),
+    .vol1(status[33:29]),
+    .vol2(status[38:34]),
+    .stereo(status[39]),
     .audio_l(audio_l),
     .audio_r(audio_r),
     .irq_ack(z80_irq_ack)
@@ -1052,12 +1088,14 @@ arcade_video #(256, 24) arcade_video (
     .gamma_bus(gamma_bus)
 );
 
-assign VGA_R  = av_vga_r;
-assign VGA_G  = av_vga_g;
-assign VGA_B  = av_vga_b;
-assign VGA_HS = av_vga_hs;
-assign VGA_VS = av_vga_vs;
-assign VGA_DE = av_vga_de;
+// The analog pins always come from the hub: the rotated picture while CRT Orientation is Horizontal, otherwise the same raw raster, both through the
+// same two pixel clock pipeline (so switching the option does not glitch the sync).
+assign VGA_R  = crt_r;
+assign VGA_G  = crt_g;
+assign VGA_B  = crt_b;
+assign VGA_HS = crt_hs;
+assign VGA_VS = crt_vs;
+assign VGA_DE = crt_de;
 
 // The game's own flip request (K007342 register 0 bit 4, written by the game when its Flip Screen DIP is on) and the OSD Flip Monitor are
 // combined with an xor: one flips, both cancel. In the rotated path the flip selects the rotation direction (clockwise or counter
@@ -1068,7 +1106,7 @@ assign VGA_DE = av_vga_de;
 wire effective_flip = flip_monitor;
 wire video_rotated;
 
-screen_rotate screen_rotate (
+ddr_rotate_hub ddr_rotate_hub (
     .CLK_VIDEO(CLK_VIDEO),
     .CE_PIXEL(CE_PIXEL),
     .VGA_R(av_vga_r),
@@ -1093,10 +1131,26 @@ screen_rotate screen_rotate (
     .DDRAM_BUSY(DDRAM_BUSY),
     .DDRAM_BURSTCNT(DDRAM_BURSTCNT),
     .DDRAM_ADDR(DDRAM_ADDR),
+    .DDRAM_DOUT(DDRAM_DOUT),
+    .DDRAM_DOUT_READY(DDRAM_DOUT_READY),
     .DDRAM_DIN(DDRAM_DIN),
     .DDRAM_BE(DDRAM_BE),
     .DDRAM_WE(DDRAM_WE),
-    .DDRAM_RD(DDRAM_RD)
+    .DDRAM_RD(DDRAM_RD),
+    .crt_en(crt_rot_sel),
+    .crt_flip(crt_flip),
+    .crt_size_auto(crt_size_auto),
+    .crt_size(crt_size),
+    .crt_hpos(5'd16),            // picture position comes from the sync shift (CRT Position options), no extra trim
+    .crt_vpos(5'd16),
+    .crt_r(crt_r),
+    .crt_g(crt_g),
+    .crt_b(crt_b),
+    .crt_hs(crt_hs),
+    .crt_vs(crt_vs),
+    .crt_de(crt_de),
+    .crt_ready(crt_ready),
+    .crt_status(crt_status)
 );
 
 reg  [26:0] act_cnt;
